@@ -40,9 +40,9 @@ trap 'rm -f "$tmp"' EXIT
 recParams=(
 	# The progress info isn't useful as it doesn't seem to be updated until the very end
 	#--no-show-progress
+	"$tmp" # Output file
 	# Use arguments to the script as arguments for rec. Useful for configuring sound sources etc.
 	"${@}"
-	"$tmp" # Output file
 	trim 0.01
 	silence
 		1 # Trim silence at the beginning of the recording
