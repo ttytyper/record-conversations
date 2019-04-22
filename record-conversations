@@ -1,0 +1,94 @@
+#!/bin/bash
+# Records periods of audio to timestamped files. Silence is trimmed and a long
+# period of silence triggers the end of one recording and the beginning of the
+# next. This could be used for e.g. keeping an audio log of walkie-talkie or
+# amateur radio chatter, with one conversation per audio file. Audio is
+# recorded to ogg files for easy meta tagging.
+#
+# Any parameters to the script are added as arguments to rec(1). In particular
+# this can be used to select your audio source. You could also apply a band
+# pass filter and normalization:
+# 
+# record-conversations sinc 200-4500 norm
+#
+# Dependencies: bash, sox (for rec), vorbis-tools (for vorbiscomment)
+#
+# Sources of inspiration:
+# 
+# http://digitalcardboard.com/blog/2009/08/25/the-sox-of-silence/
+# http://www.commandlinefu.com/commands/view/7915/record-audio-and-use-sox-to-eliminate-silence.-results-an-ogg-file-that-only-contains-the-audio-signal-exceeding-45db
+# http://www.windytan.com/2013/07/squelch-it-out.html
+#
+
+# Filename and metadata titlePattern are taken as format strings for date(1)
+filePattern='%Y-%m-%d-%H%M%S.ogg'
+titlePattern='Recorded at %Y-%m-%d %H:%M:%S%z'
+
+# If we encounter 10 seconds of silence, we end the current recording and get
+# ready for the next. You probably want to keep it long enough that silence
+# between transmissions of the same conversation doesn't trigger a restart
+splitOnSilence="10.0"
+
+# Noise weaker than this threshold is taken as silence (dB or % of max sample value)
+noiseThreshold="3"
+# Pops and noises shorther than 500ms are taken as silence
+noiseDuration="0.50"
+
+tmp="$(mktemp -t .rec.tmp.XXXXXX.ogg)"
+trap 'rm -f "$tmp"' EXIT
+
+recParams=(
+	# The progress info isn't useful as it doesn't seem to be updated until the very end
+	#--no-show-progress
+	# Use arguments to the script as arguments for rec. Useful for configuring sound sources etc.
+	"${@}"
+	"$tmp" # Output file
+	trim 0.01
+	silence
+		1 # Trim silence at the beginning of the recording
+		"$noiseDuration"
+		"$noiseThreshold"
+		1 # Trim silence at the end
+		"$splitOnSilence"
+		"$noiseThreshold"
+)
+
+# Kills rec on ctrl+c and exits the script. rec normally returns 0 when killed
+# and by default bash would keep the script running, only ending it because
+# vorbiscomment fails later on. Info:
+# https://veithen.io/2014/11/16/sigterm-propagation.html
+safeRec() {
+	local pid
+	trap 'kill -TERM $pid; wait $pid' TERM INT
+	rec "${@}" &
+	pid=$!
+	wait $pid
+	trap - TERM INT
+	wait $pid
+	return $?
+}
+
+# Keep running as long as all of the executions within are successful
+set -e
+while [ $? = 0 ]; do
+	safeRec "${recParams[@]}"
+
+	# Figure out at what time the recording started
+	time="$(date -d "-$(soxi -D "$tmp") seconds -$splitOnSilence seconds")"
+
+	# The final filename
+	filename="$(date -d "$time" +"$filePattern")"
+
+	# Apply metadata to the ogg file
+	# https://wiki.xiph.org/VorbisComment#Date_and_time
+	vorbiscomment --append \
+		-t "DATE=$(date -d "$time" --iso-8601=minutes)" \
+		-t "TITLE=$(date -d "$time" +"$titlePattern")" "$tmp"
+
+	# Move the tmp file into its final resting place
+	mv "$tmp" "$filename"
+
+	# Make world readable. mktemp sets very restrictive permissions that are
+	# probably not necessary for our use case
+	chmod =rw "$filename"
+done
